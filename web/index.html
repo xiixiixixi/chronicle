@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- web/index.html — Chronicle 时间线 UI（批次 1 骨架）
+     红线：Chronicle 不截屏、不录音；本 UI 只展示结构化活动事件。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chronicle</title>
+<style>
+  :root {
+    --amber: #f59e0b;          /* 品牌主色（琥珀） */
+    --amber-dim: rgba(245, 158, 11, 0.55);
+    --bg: #121212;             /* 近黑底 */
+    --panel: #1c1c1c;
+    --text: rgba(255, 255, 255, 0.92);
+    --text-dim: rgba(255, 255, 255, 0.55);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    text-align: center;
+    padding: 56px 64px;
+    border: 1.5px solid var(--amber-dim);
+    border-radius: 16px;
+    background: var(--panel);
+    box-shadow: 0 0 48px rgba(245, 158, 11, 0.08);
+  }
+  .mark {
+    width: 56px; height: 56px;
+    margin: 0 auto 20px;
+    border-radius: 12px;
+    background: var(--amber);
+    color: #121212;
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 56px;
+  }
+  h1 { margin: 0 0 8px; font-size: 24px; font-weight: 650; letter-spacing: 0.5px; }
+  p { margin: 4px 0 0; color: var(--text-dim); font-size: 14px; }
+  .pulse {
+    display: inline-block;
+    width: 8px; height: 8px;
+    margin-right: 8px;
+    border-radius: 50%;
+    background: var(--amber);
+    animation: pulse 2s ease-in-out infinite;
+    vertical-align: middle;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="mark">C</div>
+    <h1>Chronicle</h1>
+    <p><span class="pulse"></span>时间线 UI 即将上线</p>
+    <p>不截屏 · 不录音 · 只记录结构化活动事件</p>
+  </main>
+</body>
+</html>
