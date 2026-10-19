@@ -1,14 +1,15 @@
 {
   "name": "chronicle",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Background activity recorder for macOS: captures what apps/windows/URLs you use (no screen/audio), summarizes with LLM, serves a local timeline web UI, and exposes MCP tools for AI to query your history.",
   "main": "index.js",
   "scripts": {
     "setup": "node setup.mjs",
     "daemon": "node daemon.mjs",
+    "summarize": "node summarize.mjs",
     "mcp": "node mcp-entry.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check daemon.mjs && node --check mcp-entry.mjs && node --check setup.mjs"
+    "check": "node --check daemon.mjs && node --check mcp-entry.mjs && node --check summarize.mjs && node --check setup.mjs"
   },
   "keywords": [],
   "author": "",
@@ -31,6 +32,7 @@
     "swift/",
     "daemon.mjs",
     "mcp-entry.mjs",
+    "summarize.mjs",
     "setup.mjs",
     "uninstall.mjs",
     "web/",

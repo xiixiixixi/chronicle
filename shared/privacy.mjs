@@ -82,3 +82,27 @@ export function defaultConfig() {
     includeFocusedElement: true,
   };
 }
+
+/**
+ * 校验配置形状（PUT /api/config 写入前的闸门；只查形状，不改匹配语义——
+ * 语义由 Swift 端 decision() 与本文件 privacyDecision() 双实现保持一致）。
+ * @returns {string[]} 错误列表（空数组 = 合法）
+ */
+export function validatePrivacyConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return ['配置须为 JSON 对象'];
+  const errors = [];
+  for (const key of ['allowlist', 'blocklist']) {
+    const v = cfg[key];
+    if (v === undefined) continue; // 缺省 = 沿用现有值（PUT 侧会 merge）
+    if (!Array.isArray(v)) { errors.push(`${key} 须为数组`); continue; }
+    v.forEach((r, i) => {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) errors.push(`${key}[${i}] 须为 {scope, value} 对象`);
+      else if (r.scope !== 'app' && r.scope !== 'url') errors.push(`${key}[${i}].scope 须为 "app" 或 "url"`);
+      else if (typeof r.value !== 'string' || r.value.length === 0) errors.push(`${key}[${i}].value 须为非空字符串`);
+    });
+  }
+  for (const key of ['enabled', 'includeURLs', 'includeFocusedElement']) {
+    if (cfg[key] !== undefined && typeof cfg[key] !== 'boolean') errors.push(`${key} 须为布尔值`);
+  }
+  return errors;
+}

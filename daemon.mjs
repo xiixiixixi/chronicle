@@ -5,14 +5,21 @@
 //   ① 子进程管理：spawn Swift 守护（行协议：一行 JSON 请求 / 一行 JSON 响应，按 id 配对），
 //      进程死亡自动重启（下次请求时拉起新实例）
 //   ② HTTP 服务（默认 127.0.0.1:3777）：
-//        GET  /                          → web/index.html（时间线 UI，本批次为骨架）
-//        GET  /api/status                → 守护状态（running/paused/config/...）
-//        GET  /api/segments              → 段列表（读 <home>/segments/*/metadata.json）
-//        GET  /api/segment/:ts/events    → 该段事件（?withSuppressed=1 附带抑制记录）
-//        POST /api/pause  {durationSec?} → 暂停
-//        POST /api/resume                → 恢复
-//   ③ 摘要生成钩子：每 60s 扫描已关闭且未摘要的段，若配置了 CHRONICLE_SUMMARIZE_CMD
-//      则以段路径为参数调用（批注 2 接入真正的摘要器；未配置时静默跳过）
+//        GET    /                        → 时间线 UI（web/index.html + app.js + style.css）
+//        GET    /api/status              → 守护状态（running/paused/config/...）
+//        GET    /api/segments            → 段列表（读 <home>/segments/*/metadata.json）
+//        GET    /api/segment/:ts/events  → 该段事件（?withSuppressed=1 附带抑制记录）
+//        GET    /api/summaries           → 摘要列表（含 frontmatter 元信息）
+//        GET    /api/summaries/:file     → 单个摘要全文
+//        GET    /api/search?q=&limit=    → 跨段搜索事件
+//        GET    /api/config              → 读隐私配置
+//        PUT    /api/config              → 写隐私配置（校验规则形状；采集在跑则热重启生效）
+//        DELETE /api/history             → 清空全部段落与摘要（config/Helper.app 不动）
+//        POST   /api/pause  {durationSec?} → 暂停
+//        POST   /api/resume              → 恢复
+//   ③ 摘要调度：启动 5s 后 + 每 10 分钟调 summarize.mjs 的 summarizePending
+//      （10min/6h 两级 LLM 摘要，config.json 的 summarizer 段控制；未启用时零副作用）；
+//      外部命令钩子 CHRONICLE_SUMMARIZE_CMD 保留（批次 1 逃生口）
 //   ④ pidfile：<home>/daemon.pid；SIGTERM/SIGINT → 转发 stop 给守护 → 等待退出
 //
 // 命令行：node daemon.mjs [--port 3777] [--start|--stop|--status] [--home DIR]
@@ -25,22 +32,20 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { privacyDecision } from './shared/privacy.mjs';
+import { validatePrivacyConfig } from './shared/privacy.mjs';
+import { chronicleHome, listSegments, readSegmentEvents, searchEvents } from './shared/segments.mjs';
+import { listSummaries, readSummary, summarizePending } from './summarize.mjs';
+
+// 段/事件读取层已抽到 shared/segments.mjs（summarize 与 MCP 共用）；此处再导出保持旧 import 兼容
+export { chronicleHome, listSegments, readSegmentEvents } from './shared/segments.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)));
 export const DEFAULT_PORT = 3777;
 export const REQUEST_TIMEOUT_MS = 15_000;
-
-/** 数据根目录：CHRONICLE_HOME 环境变量 > 默认 ~/.chronicle（与 Swift 端一致）。 */
-export function chronicleHome(env = process.env) {
-  const h = env.CHRONICLE_HOME;
-  return h && h.length ? path.resolve(h) : path.join(os.homedir(), '.chronicle');
-}
 
 /** 守护二进制：优先 .app 内的安装位（TCC 权限主体），回退仓库编译产物。 */
 export function daemonBinaryPath(home = chronicleHome(), env = process.env) {
@@ -159,65 +164,13 @@ export function createDaemon(opts = {}) {
   };
 }
 
-// ---------- 段（segments）读取 ----------
-
-/** 段目录名 → 可比较时间戳（保持目录名字典序即时间序）。 */
-export function listSegments(home = chronicleHome()) {
-  const root = path.join(home, 'segments');
-  if (!existsSync(root)) return [];
-  const out = [];
-  for (const name of readdirSync(root)) {
-    const dir = path.join(root, name);
-    let meta = {};
-    try { meta = JSON.parse(readFileSync(path.join(dir, 'metadata.json'), 'utf8')); } catch { meta = {}; }
-    let eventCount = Number.isInteger(meta.eventCount) ? meta.eventCount : 0;
-    let suppressedCount = null;
-    if (!Number.isInteger(meta.eventCount)) {
-      // metadata 缺失/损坏时兜底数行数
-      try { eventCount = readFileSync(path.join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).length; } catch { eventCount = 0; }
-    }
-    try { suppressedCount = readFileSync(path.join(dir, 'suppressed.jsonl'), 'utf8').split('\n').filter(Boolean).length; } catch { /* 无抑制文件 */ }
-    out.push({
-      segment: name,
-      path: dir,
-      segmentStart: meta.segmentStart ?? null,
-      segmentEnd: meta.segmentEnd ?? null,
-      open: !meta.segmentEnd,
-      eventCount,
-      suppressedCount,
-    });
-  }
-  return out.sort((a, b) => String(b.segment).localeCompare(String(a.segment)));
-}
-
-/** 读某段事件（JSONL → 数组；坏行跳过并计数）。 */
-export function readSegmentEvents(home = chronicleHome(), segment, { withSuppressed = false } = {}) {
-  const dir = path.join(home, 'segments', String(segment));
-  if (!existsSync(dir)) return null;
-  const parseJsonl = (file) => {
-    try {
-      const lines = readFileSync(path.join(dir, file), 'utf8').split('\n').filter(Boolean);
-      const events = [];
-      let skipped = 0;
-      for (const line of lines) {
-        try { events.push(JSON.parse(line)); } catch { skipped += 1; }
-      }
-      return { events, skipped };
-    } catch { return { events: [], skipped: 0 }; }
-  };
-  const { events, skipped } = parseJsonl('events.jsonl');
-  const out = { segment: String(segment), events, skipped };
-  if (withSuppressed) {
-    out.suppressed = parseJsonl('suppressed.jsonl').events;
-  }
-  return out;
-}
-
-// ---------- 摘要钩子（批注 2 接入真正的摘要器；现在只留接口） ----------
+// ---------- 摘要钩子 ----------
 
 /**
- * 对已关闭且尚无 summary 标记的段调用摘要命令。
- * CHRONICLE_SUMMARIZE_CMD 未配置时静默返回（接口就绪、无副作用）。
+ * 外部摘要命令钩子（批次 1 遗留的可选逃生口）。
+ * 配置 CHRONICLE_SUMMARIZE_CMD="<命令>" 时对已关闭且无 summary.json 标记的段
+ * 以段路径为参数调用；内置 LLM 摘要器见 summarize.mjs（summarizePending）。
+ * 未配置时静默返回（无副作用）。
  * @returns {Promise<{checked: number, summarized: number, skipped: string[]}>}
  */
 export async function runSummaries(home = chronicleHome(), { env = process.env, log = () => {}, runner = spawnSync } = {}) {
@@ -266,6 +219,32 @@ function pidAlive(pid) {
 
 // ---------- HTTP 服务 ----------
 
+/** web/ 下允许静态返回的文件（白名单，杜绝路径穿越）。 */
+const STATIC_FILES = {
+  '/': ['index.html', 'text/html; charset=utf-8'],
+  '/index.html': ['index.html', 'text/html; charset=utf-8'],
+  '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/style.css': ['style.css', 'text/css; charset=utf-8'],
+};
+
+function readConfigFile(home) {
+  try { return JSON.parse(readFileSync(path.join(home, 'config.json'), 'utf8')); } catch { return null; }
+}
+
+/** 清空历史：删除 segments/ 与 summaries/ 下的全部条目（目录保留，config 与 Helper.app 不动）。 */
+export function clearHistory(home) {
+  const counts = { removedSegments: 0, removedSummaries: 0 };
+  for (const [dir, key] of [['segments', 'removedSegments'], ['summaries', 'removedSummaries']]) {
+    const root = path.join(home, dir);
+    mkdirSync(root, { recursive: true });
+    for (const name of readdirSync(root)) {
+      rmSync(path.join(root, name), { recursive: true, force: true });
+      counts[key] += 1;
+    }
+  }
+  return counts;
+}
+
 export function createHttpApp({ daemon, home, webDir = path.join(REPO_ROOT, 'web'), log = () => {} } = {}) {
   const server = createServer(async (req, res) => {
     const send = (code, body, headers = {}) => {
@@ -275,10 +254,17 @@ export function createHttpApp({ daemon, home, webDir = path.join(REPO_ROOT, 'web
     const sendJson = (code, obj) => send(code, obj, { 'Content-Type': 'application/json; charset=utf-8' });
     const url = new URL(req.url, 'http://127.0.0.1');
     try {
-      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-        const file = path.join(webDir, 'index.html');
-        if (!existsSync(file)) return send(404, 'web/index.html 缺失');
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      if (req.method === 'GET' && url.pathname === '/favicon.ico') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      // 静态资源（时间线 UI；仅白名单文件）
+      if (req.method === 'GET' && STATIC_FILES[url.pathname]) {
+        const [name, type] = STATIC_FILES[url.pathname];
+        const file = path.join(webDir, name);
+        if (!existsSync(file)) return send(404, `web/${name} 缺失`);
+        res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
         createReadStream(file).pipe(res);
         return;
       }
@@ -295,6 +281,21 @@ export function createHttpApp({ daemon, home, webDir = path.join(REPO_ROOT, 'web
         if (!data) return sendJson(404, { ok: false, error: 'segment not found' });
         return sendJson(200, { ok: true, ...data });
       }
+      if (req.method === 'GET' && url.pathname === '/api/summaries') {
+        return sendJson(200, { ok: true, summaries: listSummaries(home) });
+      }
+      if (req.method === 'GET' && /^\/api\/summaries\/[^/]+$/.test(url.pathname)) {
+        const name = decodeURIComponent(url.pathname.split('/')[3]);
+        const markdown = readSummary(home, name);
+        if (markdown === null) return sendJson(404, { ok: false, error: 'summary not found' });
+        return sendJson(200, { ok: true, filename: name, markdown });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/search') {
+        const q = url.searchParams.get('q');
+        if (!q || !q.trim()) return sendJson(400, { ok: false, error: '缺少 q 参数' });
+        const limit = Number.parseInt(url.searchParams.get('limit') ?? '', 10);
+        return sendJson(200, { ok: true, ...searchEvents(home, { q, limit: Number.isInteger(limit) ? limit : 100 }) });
+      }
       if (req.method === 'POST' && url.pathname === '/api/pause') {
         const body = await readBody(req);
         const durationSec = Number.parseInt(body?.durationSec, 10);
@@ -304,6 +305,40 @@ export function createHttpApp({ daemon, home, webDir = path.join(REPO_ROOT, 'web
       if (req.method === 'POST' && url.pathname === '/api/resume') {
         const r = await daemon.request('resume');
         return sendJson(200, { ok: true, ...r });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/config') {
+        const cfg = readConfigFile(home);
+        if (!cfg) return sendJson(404, { ok: false, error: 'config.json 不存在（先跑 npm run setup）' });
+        return sendJson(200, { ok: true, config: cfg });
+      }
+      if (req.method === 'PUT' && url.pathname === '/api/config') {
+        const body = await readBody(req);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return sendJson(400, { ok: false, error: '请求体须为 JSON 对象' });
+        }
+        const errors = validatePrivacyConfig(body);
+        if (errors.length) return sendJson(400, { ok: false, errors });
+        const merged = { ...(readConfigFile(home) ?? {}), ...body }; // 保留未知键（如 summarizer）
+        writeFileSync(path.join(home, 'config.json'), `${JSON.stringify(merged, null, 2)}\n`);
+        // 若采集在跑：重启观察让新规则立即生效（stop 关闭当前段，start 按新配置开新段）
+        let applied = null;
+        try {
+          const st = await daemon.request('status');
+          if (st.running === true) {
+            try { await daemon.request('stop'); await daemon.request('start'); applied = true; } catch (err) { applied = false; log(`规则热应用失败: ${err.message}`); }
+          } else applied = false;
+        } catch { applied = null; /* 守护不可达：文件已写，下次启动生效 */ }
+        return sendJson(200, { ok: true, config: merged, applied });
+      }
+      if (req.method === 'DELETE' && url.pathname === '/api/history') {
+        // 清空前先停采集（避免守护句柄写已删除目录），清空后重新拉起
+        let wasRunning = false;
+        try { wasRunning = (await daemon.request('status')).running === true; } catch { /* 守护不可达就只清文件 */ }
+        if (wasRunning) { try { await daemon.request('stop'); } catch { /* 忽略 */ } }
+        const counts = clearHistory(home);
+        let restarted = false;
+        if (wasRunning) { try { await daemon.request('start'); restarted = true; } catch (err) { log(`清空后重启采集失败: ${err.message}`); } }
+        return sendJson(200, { ok: true, ...counts, restarted });
       }
       return sendJson(404, { ok: false, error: 'not found' });
     } catch (err) {
@@ -390,7 +425,15 @@ async function main() {
     return 1;
   }
 
-  // 摘要钩子：每 60s 扫一次（未配置 CHRONICLE_SUMMARIZE_CMD 时为空转）
+  // 摘要：启动 5s 后先扫一遍（补上一会话遗留的已关闭段），之后每 10 分钟一次
+  //（摘要器未启用时零副作用；外部命令钩子 CHRONICLE_SUMMARIZE_CMD 仍每 60s 空转扫描）
+  const builtinSummaryTimer = setInterval(() => {
+    summarizePending(home, { env: process.env, log: (m) => console.log(`[summary] ${m}`) }).catch(() => {});
+  }, 10 * 60_000);
+  builtinSummaryTimer.unref();
+  setTimeout(() => {
+    summarizePending(home, { env: process.env, log: (m) => console.log(`[summary] ${m}`) }).catch(() => {});
+  }, 5_000).unref();
   const summaryTimer = setInterval(() => { runSummaries(home, { log: (m) => console.log(`[summary] ${m}`) }).catch(() => {}); }, 60_000);
   summaryTimer.unref();
 

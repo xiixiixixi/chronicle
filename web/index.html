@@ -1,70 +1,73 @@
 <!doctype html>
-<!-- web/index.html — Chronicle 时间线 UI（批次 1 骨架）
+<!-- web/index.html — Chronicle 时间线 UI（批次 2）
+     单页应用：时间线 + AI 摘要 + 搜索 + 暂停/恢复 + 隐私设置，通过本地 HTTP API 与守护通信。
      红线：Chronicle 不截屏、不录音；本 UI 只展示结构化活动事件。 -->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chronicle</title>
-<style>
-  :root {
-    --amber: #f59e0b;          /* 品牌主色（琥珀） */
-    --amber-dim: rgba(245, 158, 11, 0.55);
-    --bg: #121212;             /* 近黑底 */
-    --panel: #1c1c1c;
-    --text: rgba(255, 255, 255, 0.92);
-    --text-dim: rgba(255, 255, 255, 0.55);
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-  .card {
-    text-align: center;
-    padding: 56px 64px;
-    border: 1.5px solid var(--amber-dim);
-    border-radius: 16px;
-    background: var(--panel);
-    box-shadow: 0 0 48px rgba(245, 158, 11, 0.08);
-  }
-  .mark {
-    width: 56px; height: 56px;
-    margin: 0 auto 20px;
-    border-radius: 12px;
-    background: var(--amber);
-    color: #121212;
-    font-size: 32px;
-    font-weight: 700;
-    line-height: 56px;
-  }
-  h1 { margin: 0 0 8px; font-size: 24px; font-weight: 650; letter-spacing: 0.5px; }
-  p { margin: 4px 0 0; color: var(--text-dim); font-size: 14px; }
-  .pulse {
-    display: inline-block;
-    width: 8px; height: 8px;
-    margin-right: 8px;
-    border-radius: 50%;
-    background: var(--amber);
-    animation: pulse 2s ease-in-out infinite;
-    vertical-align: middle;
-  }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
-</style>
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main class="card">
-    <div class="mark">C</div>
-    <h1>Chronicle</h1>
-    <p><span class="pulse"></span>时间线 UI 即将上线</p>
-    <p>不截屏 · 不录音 · 只记录结构化活动事件</p>
-  </main>
+<header id="topbar">
+  <div class="brand">
+    <span class="logo">⏱</span>
+    <span class="brand-name">Chronicle</span>
+    <span id="paused-badge" class="paused-badge hidden">已暂停</span>
+    <span id="status-line" class="status-line">连接中…</span>
+  </div>
+  <div class="actions">
+    <button id="btn-pause" class="btn" title="暂停/恢复采集">⏸ 暂停</button>
+    <button id="btn-settings" class="btn">⚙ 设置</button>
+  </div>
+</header>
+
+<main id="main">
+  <section id="view-timeline">
+    <div id="days"><div class="empty">正在加载时间线…</div></div>
+  </section>
+  <section id="view-search" class="hidden">
+    <div class="search-head">
+      <button id="btn-back" class="btn small">← 返回时间线</button>
+      <span id="search-summary" class="search-summary"></span>
+    </div>
+    <ol id="search-results" class="tl"></ol>
+  </section>
+</main>
+
+<footer id="searchbar">
+  <span class="search-mark">🔍</span>
+  <input id="search-input" type="search" placeholder="搜索应用 / 窗口标题 / 网址…（回车）" autocomplete="off">
+  <button id="btn-search" class="btn">搜索</button>
+</footer>
+
+<!-- 设置弹窗：隐私规则 + 危险区 -->
+<div id="modal-settings" class="modal hidden" role="dialog" aria-modal="true" aria-label="隐私设置">
+  <div class="modal-panel">
+    <h3>隐私设置</h3>
+    <p class="hint">blocklist 永远优先于 allowlist。规则每行一条，格式 <code>app:com.1password.*</code> 或 <code>url:*banking*</code>（glob，不区分大小写）。保存后若采集在跑会自动重启观察使规则立即生效。</p>
+    <label class="chk"><input type="checkbox" id="cfg-enabled"> 总开关（关闭 = 不采集任何事件）</label>
+    <label class="chk"><input type="checkbox" id="cfg-urls"> 记录浏览器网址（includeURLs）</label>
+    <label class="chk"><input type="checkbox" id="cfg-focus"> 记录焦点元素（includeFocusedElement）</label>
+    <label class="fld">blocklist（阻断名单）
+      <textarea id="cfg-block" rows="5" spellcheck="false" placeholder="app:com.1password.*&#10;url:*banking*"></textarea>
+    </label>
+    <label class="fld">allowlist（白名单；留空 = 观察一切未阻断的）
+      <textarea id="cfg-allow" rows="3" spellcheck="false" placeholder="app:com.apple.*"></textarea>
+    </label>
+    <div class="modal-actions">
+      <button id="btn-save" class="btn primary">保存</button>
+      <button id="btn-close-settings" class="btn">关闭</button>
+    </div>
+    <div class="danger-zone">
+      <button id="btn-clear" class="btn danger">清除全部历史…</button>
+      <span class="hint">删除所有段落与摘要（纯文件，删了就没了；不影响隐私规则与 Helper.app）</span>
+    </div>
+    <div id="settings-msg" class="msg"></div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
 </body>
 </html>
