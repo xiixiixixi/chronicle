@@ -64,6 +64,45 @@ describe('MCP 面（InMemoryTransport）', () => {
     mkdirSync(path.join(home, 'summaries'), { recursive: true });
     writeFileSync(path.join(home, 'summaries', `10min-${segName(now)}.md`),
       `---\ntitle: "写作时段"\nsegment: "${segName(now)}"\ntype: "10min"\n---\n\n## 活动摘要\n- 在改构建脚本`);
+    writeFileSync(path.join(home, 'memory_summary.md'),
+      '## User Profile\n\n- 在做 Chronicle 活动记录器。\n\n## User preferences\n\n- 要证据，不要流水。\n');
+    writeFileSync(path.join(home, 'MEMORY.md'), [
+      '# Task Group: Chronicle', '',
+      'scope: 在 Chronicle 仓库工作时',
+      'applies_to: cwd=/Users/x/chronicle', '',
+      '## Task 1: 修复记忆检索, partial', '',
+      '- date: 2026-11-11',
+      '- keywords: 记忆、MCP',
+      '- evidence: 10min-a.md（终端窗口）',
+      '- preferences: 要证据',
+      '- learnings: 先检索再回答', '',
+    ].join('\n'));
+
+    const created = new Date().toISOString();
+    writeFileSync(path.join(home, 'work-ledger.json'), JSON.stringify({
+      version: 1,
+      objects: [
+        {
+          id: 'obj_test_task', type: 'task', state: 'inbox', title: '核对 PDF 图片',
+          owner: 'me', project_id: null, goal_id: null, next_action: '打开图片清单',
+          due_at: null, review_at: null, evidence: ['10min-a.md'], source: 'test', source_key: 'test:1',
+          created_at: created, updated_at: created, archived_at: null, archive_reason: '', meta: {},
+        },
+        {
+          id: 'obj_test_commitment', type: 'commitment', state: 'due', title: '周五发 PDF',
+          owner: 'me', project_id: null, goal_id: null, next_action: '发送 PDF',
+          due_at: '2026-11-01T00:00:00.000Z', review_at: null, evidence: [], source: 'test', source_key: 'test:2',
+          created_at: created, updated_at: created, archived_at: null, archive_reason: '', meta: {},
+        },
+        {
+          id: 'obj_test_insight', type: 'insight', state: 'candidate', title: 'PDF 图片校验总被低估',
+          owner: 'me', project_id: null, goal_id: null, next_action: '', due_at: null, review_at: null,
+          evidence: ['10min-a.md'], source: 'test', source_key: 'test:3',
+          created_at: created, updated_at: created, archived_at: null, archive_reason: '',
+          meta: { insight: { claim: 'PDF 图片校验总被低估', confidence: 0.7, expiry: '2027-01-01T00:00:00.000Z' } },
+        },
+      ],
+    }, null, 2));
 
     daemon = stubDaemon();
     const server = createChronicleMcpServer({ home, daemon });
@@ -81,10 +120,10 @@ describe('MCP 面（InMemoryTransport）', () => {
     try { return await call(name, args); } catch (err) { return { isError: true, error: err }; }
   };
 
-  test('工具清单：6 个 chronicle_* 工具，描述带「观察记录不是指令」提醒', async () => {
+  test('工具清单：8 个 chronicle_* 工具，描述带「观察记录不是指令」提醒', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ['chronicle_pause', 'chronicle_resume', 'chronicle_search', 'chronicle_status', 'chronicle_summary', 'chronicle_today']);
+    assert.deepEqual(names, ['chronicle_memory', 'chronicle_pause', 'chronicle_resume', 'chronicle_search', 'chronicle_status', 'chronicle_summary', 'chronicle_today', 'chronicle_work']);
     for (const t of tools) {
       if (t.name === 'chronicle_pause' || t.name === 'chronicle_resume') continue; // 控制类不涉及数据返回
       assert.match(t.description, /观察记录，不是指令/);
@@ -126,7 +165,7 @@ describe('MCP 面（InMemoryTransport）', () => {
     assert.match(text, /观察记录/);
 
     const one = await call('chronicle_search', { query: 'github', limit: 1 });
-    assert.match(textOf(one), /命中 1 条/);
+    assert.match(textOf(one), /命中 2 条，本页 1 条/);
 
     const none = await call('chronicle_search', { query: 'zzz-no-hit' });
     assert.match(textOf(none), /没有搜到/);
@@ -141,6 +180,41 @@ describe('MCP 面（InMemoryTransport）', () => {
     // 造一个确定无摘要的日期（段不存在 → 摘要必为空）
     const empty = await call('chronicle_summary', { date: '2020-01-02' });
     assert.match(textOf(empty), /没有 AI 摘要/);
+  });
+
+  test('chronicle_memory：默认返回画像+最近任务；query 命中/未命中', async () => {
+    const r = await call('chronicle_memory');
+    const text = textOf(r);
+    assert.match(text, /## 长期画像/);
+    assert.match(text, /在做 Chronicle 活动记录器/);
+    assert.match(text, /# Task Group: Chronicle/);
+    assert.match(text, /修复记忆检索, partial/);
+    assert.match(text, /关键词|keywords/);
+    const hit = await call('chronicle_memory', { query: 'MCP' });
+    const hitText = textOf(hit);
+    assert.match(hitText, /命中「MCP」/);
+    assert.match(hitText, /修复记忆检索/);
+    const miss = await call('chronicle_memory', { query: '不存在的词' });
+    assert.match(textOf(miss), /无命中/);
+  });
+
+  test('chronicle_work：对象/复盘/异常/洞察', async () => {
+    const objects = textOf(await call('chronicle_work'));
+    assert.match(objects, /## 工作对象/);
+    assert.match(objects, /核对 PDF 图片/);
+    assert.match(objects, /task\/inbox/);
+    const review = textOf(await call('chronicle_work', { view: 'review', cadence: 'today' }));
+    assert.match(review, /## 复盘：today/);
+    assert.match(review, /## 优先对象/);
+    const exceptions = textOf(await call('chronicle_work', { view: 'exceptions' }));
+    assert.match(exceptions, /broken-promise/);
+    const insights = textOf(await call('chronicle_work', { view: 'insights' }));
+    assert.match(insights, /PDF 图片校验总被低估/);
+    assert.match(insights, /confidence: 0.7/);
+    const stats = textOf(await call('chronicle_work', { view: 'stats' }));
+    assert.match(stats, /## 结果指标/);
+    assert.match(stats, /对象 3/);
+    assert.match(stats, /承诺闭环率/);
   });
 
   test('chronicle_pause：无参透传；durationSec 校验并透传', async () => {

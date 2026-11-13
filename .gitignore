@@ -2,3 +2,6 @@ node_modules/
 host/
 *.log
 .DS_Store
+# 本机真实活动数据与截图，不上传（公开仓库）
+docs/evidence/
+design-demos/

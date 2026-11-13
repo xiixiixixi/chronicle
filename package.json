@@ -1,6 +1,6 @@
 {
   "name": "chronicle",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "description": "Background activity recorder for macOS: captures what apps/windows/URLs you use (no screen/audio), summarizes with LLM, serves a local timeline web UI, and exposes MCP tools for AI to query your history.",
   "main": "index.js",
   "scripts": {
@@ -8,8 +8,18 @@
     "daemon": "node daemon.mjs",
     "summarize": "node summarize.mjs",
     "mcp": "node mcp-entry.mjs",
+    "service:install": "node setup.mjs --service-install",
+    "service:uninstall": "node uninstall.mjs --service-only",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check daemon.mjs && node --check mcp-entry.mjs && node --check summarize.mjs && node --check setup.mjs"
+    "check": "node --check daemon.mjs && node --check uninstall.mjs && node --check mcp-entry.mjs && node --check summarize.mjs && node --check setup.mjs && node --check shared/segments.mjs && node --check shared/privacy.mjs && node --check shared/index.mjs && node --check shared/compression.mjs && node --check shared/retention.mjs && node --check shared/maintenance.mjs && node --check scripts/bench.mjs && node --check shared/model-config.mjs && node --check shared/memory.mjs && node --check shared/insights.mjs && node --check shared/work-ledger.mjs && node --check scripts/work-ledger.mjs && node --check shared/audit.mjs && node --check shared/agent-registry.mjs && node --check shared/agent-executor.mjs && node --check shared/coverage.mjs && node --check shared/team.mjs && node --check shared/analysis-catchup.mjs && node --check shared/app-icons.mjs",
+    "bench": "node scripts/bench.mjs",
+    "maintain": "node daemon.mjs --maintain",
+    "maintain:dry": "node daemon.mjs --maintain --dry-run",
+    "uninstall": "node uninstall.mjs",
+    "mcp:install": "node mcp-install.mjs",
+    "memory:consolidate": "node summarize.mjs --consolidate",
+    "compare:codex": "node scripts/compare-codex.mjs",
+    "work": "node scripts/work-ledger.mjs"
   },
   "keywords": [],
   "author": "",
@@ -36,6 +46,12 @@
     "setup.mjs",
     "uninstall.mjs",
     "web/",
-    "shared/"
+    "shared/",
+    "scripts/",
+    "mcp-install.mjs",
+    "install.command",
+    "INSTALL.md",
+    "assets/",
+    "native/"
   ]
 }
